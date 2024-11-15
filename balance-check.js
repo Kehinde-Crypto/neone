@@ -1,74 +1,148 @@
+require('dotenv').config();
 const { TronWeb } = require('tronweb');
+const winston = require('winston');
+
+// Configure Winston logger
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+    ),
+    transports: [
+        // Write logs to file
+        new winston.transports.File({ filename: 'error.log', level: 'error' }),
+        new winston.transports.File({ filename: 'combined.log' }),
+        // Also log to console
+        new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.simple()
+            )
+        })
+    ]
+});
 
 // TronWeb configuration
 const tronWeb = new TronWeb({
     fullHost: 'https://api.trongrid.io'
 });
 
-// Replace these with actual values
-const multiSigWalletAddress = process.env.MULTISIGWALLETADDRESS; 
-const receiverAddress = process.env.RECIEVER_ADDRESS;    
-const senderPrivateKey = process.env.SENDER_PRIVATE_KEY;  
-const thresholdBalance = 820000;                          // 0.82 TRX in SUN (1 TRX = 1,000,000 SUN)
+// Log startup configuration
+logger.info('Starting TRON transaction bot');
+logger.info(`Using TRON network: ${tronWeb.fullNode.host}`);
 
-// Set the private key for signing transactions
+const senderPrivateKey = process.env.SENDER_PRIVATE_KEY;
+const multiSigWalletAddress = process.env.MULTISIGWALLETADDRESS;
+const receiverAddress = process.env.RECIEVER_ADDRESS;
+const thresholdBalance = 820000;
+
 tronWeb.setPrivateKey(senderPrivateKey);
 
-// Function to check the balance and send all TRX if threshold is met
+logger.info('Configuration loaded', {
+    multiSigWalletAddress,
+    receiverAddress,
+    thresholdBalance
+});
+
 async function checkBalanceAndSendTransaction() {
+    logger.info('Initiating balance check');
     try {
         const balance = await tronWeb.trx.getBalance(multiSigWalletAddress);
-        console.log(`Current Balance: ${balance} SUN (1 TRX = 1,000,000 SUN)`);
+        logger.info('Balance retrieved', {
+            balance,
+            walletAddress: multiSigWalletAddress
+        });
 
         if (balance >= thresholdBalance) {
-            console.log(`Balance exceeds threshold. Sending all available TRX...`);
+            logger.info('Balance exceeds threshold, initiating transfer', {
+                balance,
+                threshold: thresholdBalance
+            });
             await sendAllTRX(balance);
         } else {
-            console.log(`Balance is below threshold. No transaction initiated.`);
+            logger.info('Balance below threshold, no action needed', {
+                balance,
+                threshold: thresholdBalance
+            });
         }
     } catch (error) {
-        console.error('Error fetching balance:', error.message);
+        logger.error('Failed to check balance', {
+            error: error.message,
+            stack: error.stack
+        });
     }
 }
 
-// Function to send all available TRX from the wallet
 async function sendAllTRX(balance) {
+    logger.info('Initiating TRX transfer');
     try {
-        // Estimate transaction fee (in SUN) and calculate the amount to send
-        const estimatedFee = 100000; // 100,000 SUN (0.1 TRX) is typical for a TRX transaction
+        const estimatedFee = 100000;
         const amountToSend = balance - estimatedFee;
 
+        logger.info('Calculated transfer amount', {
+            totalBalance: balance,
+            estimatedFee,
+            amountToSend
+        });
+
         if (amountToSend <= 0) {
-            console.error('Insufficient balance after transaction fee deduction');
+            logger.error('Insufficient balance after fee deduction', {
+                balance,
+                estimatedFee
+            });
             return;
         }
 
+        logger.info('Building transaction');
         const tx = await tronWeb.transactionBuilder.sendTrx(
             receiverAddress,
             amountToSend,
             tronWeb.defaultAddress.base58
         );
 
+        logger.info('Signing transaction');
         const signedTx = await tronWeb.trx.sign(tx);
+        
+        logger.info('Broadcasting transaction');
         const broadcastResponse = await tronWeb.trx.sendRawTransaction(signedTx);
 
         if (broadcastResponse.result) {
-            console.log('Transaction Successful:', broadcastResponse);
+            logger.info('Transaction successful', {
+                response: broadcastResponse,
+                amount: amountToSend,
+                receiver: receiverAddress
+            });
         } else {
-            console.log('Transaction Failed:', broadcastResponse);
+            logger.error('Transaction failed', {
+                response: broadcastResponse
+            });
             throw new Error('Broadcasting transaction failed');
         }
     } catch (error) {
         if (error.message.includes('insufficient balance')) {
-            console.error('Error: Insufficient balance to complete the transaction');
+            logger.error('Insufficient balance error', {
+                error: error.message,
+                balance
+            });
         } else if (error.message.includes('network issue')) {
-            console.error('Network issue detected. Retrying in 10 seconds...');
-            setTimeout(() => sendAllTRX(balance), 10000); // Retry after 10 seconds
+            logger.warn('Network issue detected, scheduling retry', {
+                error: error.message
+            });
+            setTimeout(() => sendAllTRX(balance), 10000);
         } else {
-            console.error('Error sending TRX:', error.message);
+            logger.error('Transaction error', {
+                error: error.message,
+                stack: error.stack
+            });
         }
     }
 }
 
-// Set up periodic balance checks (e.g., every 1 minute)
-setInterval(checkBalanceAndSendTransaction, 60000); // Check every 60 seconds
+// Start the periodic checks
+logger.info('Starting periodic balance checks');
+setInterval(checkBalanceAndSendTransaction, 60000);
+
+// Initial check on startup
+checkBalanceAndSendTransaction();
+

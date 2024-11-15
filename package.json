@@ -11,6 +11,7 @@
   "description": "",
   "dependencies": {
     "dotenv": "^16.4.5",
-    "tronweb": "^6.0.0"
+    "tronweb": "^6.0.0",
+    "winston": "^3.11.0"
   }
 }
