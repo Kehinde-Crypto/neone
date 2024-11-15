@@ -12,6 +12,7 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "tronweb": "^6.0.0",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^5.0.0"
   }
 }
