@@ -220,7 +220,7 @@ async function initialize() {
     process.exit(1);
   }
 
-  intervalId = setInterval(checkBalanceAndSendTransaction, 60000);
+  intervalId = setInterval(checkBalanceAndSendTransaction, 30000);
   checkBalanceAndSendTransaction();
 }
 
