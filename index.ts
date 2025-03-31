@@ -1,7 +1,9 @@
-require("dotenv").config();
-const { TronWeb } = require("tronweb");
-const { createLogger, format, transports } = require("winston");
-require("winston-daily-rotate-file");
+import dotenv from 'dotenv';
+import { TronWeb } from 'tronweb';
+import { createLogger, format, transports } from 'winston';
+import 'winston-daily-rotate-file';
+
+dotenv.config();
 
 // Configure Winston logger
 const logger = createLogger({
@@ -26,7 +28,7 @@ const logger = createLogger({
 });
 
 // Add at the top of your file after the logger configuration
-process.on("uncaughtException", (error) => {
+process.on("uncaughtException", (error: Error) => {
   logger.error("Uncaught Exception", {
     error: error.message,
     stack: error.stack,
@@ -34,7 +36,7 @@ process.on("uncaughtException", (error) => {
   process.exit(1);
 });
 
-process.on("unhandledRejection", (reason, promise) => {
+process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
   logger.error("Unhandled Rejection", {
     reason,
     promise,
@@ -50,10 +52,10 @@ const tronWeb = new TronWeb({
 logger.info("Starting TRON transaction bot");
 logger.info(`Using TRON network: ${tronWeb.fullNode.host}`);
 
-const senderPrivateKey = process.env.SENDER_PRIVATE_KEY;
-const multiSigWalletAddress = process.env.MULTISIGWALLETADDRESS;
-const receiverAddress = process.env.RECIEVER_ADDRESS;
-const thresholdBalance = 820000;
+const senderPrivateKey: string = process.env.SENDER_PRIVATE_KEY || '';
+const multiSigWalletAddress: string = process.env.MULTISIGWALLETADDRESS || '';
+const receiverAddress: string = process.env.RECIEVER_ADDRESS || '';
+const thresholdBalance: number = 820000;
 
 tronWeb.setPrivateKey(senderPrivateKey);
 
@@ -64,14 +66,14 @@ logger.info("Configuration loaded", {
 });
 
 // Add after require statements
-function validateEnvironment() {
-  const required = [
+function validateEnvironment(): void {
+  const required: string[] = [
     "SENDER_PRIVATE_KEY",
     "MULTISIGWALLETADDRESS",
     "RECIEVER_ADDRESS",
   ];
 
-  const missing = required.filter((key) => !process.env[key]);
+  const missing: string[] = required.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
     logger.error("Missing required environment variables", { missing });
@@ -82,10 +84,10 @@ function validateEnvironment() {
 // Call it before using any env vars
 validateEnvironment();
 
-async function checkBalanceAndSendTransaction() {
+async function checkBalanceAndSendTransaction(): Promise<void> {
   logger.info("Initiating balance check");
   try {
-    const balance = await tronWeb.trx.getBalance(multiSigWalletAddress);
+    const balance: number = await tronWeb.trx.getBalance(multiSigWalletAddress);
     logger.info("Balance retrieved", {
       balance,
       walletAddress: multiSigWalletAddress,
@@ -105,13 +107,13 @@ async function checkBalanceAndSendTransaction() {
     }
   } catch (error) {
     logger.error("Failed to check balance", {
-      error: error.message,
-      stack: error.stack,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
   }
 }
 
-async function sendAllTRX(balance, retryCount = 0) {
+async function sendAllTRX(balance: number, retryCount: number = 0): Promise<void> {
   const MAX_RETRIES = 3;
   try {
     // Check permissions first
@@ -138,17 +140,20 @@ async function sendAllTRX(balance, retryCount = 0) {
     );
 
     const response = await tronWeb.trx.sendRawTransaction(signedTransaction);
-
     // Rest of your existing code...
   } catch (error) {
-    // Your existing error handling...
+    logger.error("Transaction failed", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    throw error;
   }
 }
 
 // Add before starting the interval
-let intervalId;
+let intervalId: NodeJS.Timeout;
 
-function gracefulShutdown() {
+function gracefulShutdown(): void {
   logger.info("Received shutdown signal, cleaning up...");
   clearInterval(intervalId);
   logger.info("Cleanup completed, shutting down");
@@ -165,7 +170,7 @@ intervalId = setInterval(checkBalanceAndSendTransaction, 60000);
 // Initial check on startup
 checkBalanceAndSendTransaction();
 
-async function checkWalletPermissions() {
+async function checkWalletPermissions(): Promise<any> {
   try {
     const contract = await tronWeb.trx.getContract(multiSigWalletAddress);
     logger.info("Contract permissions", {
@@ -184,14 +189,14 @@ async function checkWalletPermissions() {
     return accountPermissions;
   } catch (error) {
     logger.error("Failed to check wallet permissions", {
-      error: error.message,
-      stack: error.stack,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
     return null;
   }
 }
 
-async function validateWalletType() {
+async function validateWalletType(): Promise<boolean> {
   try {
     const account = await tronWeb.trx.getAccount(multiSigWalletAddress);
     if (!account.owner_permission || !account.active_permission) {
@@ -206,14 +211,14 @@ async function validateWalletType() {
     return true;
   } catch (error) {
     logger.error("Wallet validation failed", {
-      error: error.message,
-      stack: error.stack,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
     return false;
   }
 }
 
-async function initialize() {
+async function initialize(): Promise<void> {
   const isValid = await validateWalletType();
   if (!isValid) {
     logger.error("Invalid wallet configuration, exiting");
