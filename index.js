@@ -1,227 +1,217 @@
 require("dotenv").config();
-const { TronWeb } = require("tronweb");
-const { createLogger, format, transports } = require("winston");
-require("winston-daily-rotate-file");
+const TelegramBot = require("node-telegram-bot-api");
+const { db } = require("./db/db");
+const { wallets, transactions } = require("./db/schema");
+const { eq } = require("drizzle-orm");
+const TronWeb = require("tronweb").default;
+const { users } = require("./db/schema");
 
-// Configure Winston logger
-const logger = createLogger({
-  level: "info",
-  format: format.combine(format.timestamp(), format.json()),
-  transports: [
-    new transports.DailyRotateFile({
-      filename: "logs/error-%DATE%.log",
-      datePattern: "YYYY-MM-DD",
-      level: "error",
-      maxFiles: "14d",
-    }),
-    new transports.DailyRotateFile({
-      filename: "logs/combined-%DATE%.log",
-      datePattern: "YYYY-MM-DD",
-      maxFiles: "14d",
-    }),
-    new transports.Console({
-      format: format.combine(format.colorize(), format.simple()),
-    }),
-  ],
-});
 
-// Add at the top of your file after the logger configuration
-process.on("uncaughtException", (error) => {
-  logger.error("Uncaught Exception", {
-    error: error.message,
-    stack: error.stack,
-  });
-  process.exit(1);
-});
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled Rejection", {
-    reason,
-    promise,
-  });
-});
+// Handle /start command
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || "Unknown";
 
-// TronWeb configuration
-const tronWeb = new TronWeb({
-  fullHost: "https://api.trongrid.io",
-});
-
-// Log startup configuration
-logger.info("Starting TRON transaction bot");
-logger.info(`Using TRON network: ${tronWeb.fullNode.host}`);
-
-const senderPrivateKey = process.env.SENDER_PRIVATE_KEY;
-const multiSigWalletAddress = process.env.MULTISIGWALLETADDRESS;
-const receiverAddress = process.env.RECIEVER_ADDRESS;
-const thresholdBalance = 820000;
-
-tronWeb.setPrivateKey(senderPrivateKey);
-
-logger.info("Configuration loaded", {
-  multiSigWalletAddress,
-  receiverAddress,
-  thresholdBalance,
-});
-
-// Add after require statements
-function validateEnvironment() {
-  const required = [
-    "SENDER_PRIVATE_KEY",
-    "MULTISIGWALLETADDRESS",
-    "RECIEVER_ADDRESS",
-  ];
-
-  const missing = required.filter((key) => !process.env[key]);
-
-  if (missing.length > 0) {
-    logger.error("Missing required environment variables", { missing });
-    process.exit(1);
-  }
-}
-
-// Call it before using any env vars
-validateEnvironment();
-
-async function checkBalanceAndSendTransaction() {
-  logger.info("Initiating balance check");
   try {
-    const balance = await tronWeb.trx.getBalance(multiSigWalletAddress);
-    logger.info("Balance retrieved", {
-      balance,
-      walletAddress: multiSigWalletAddress,
-    });
+    // Check if user already exists
+    const existingUser = await db
+      .select()
+      .from(users)
+      .where(eq(users.telegramUserId, chatId.toString()))
+      .then((res) => res[0]);
 
-    if (balance >= thresholdBalance) {
-      logger.info("Balance exceeds threshold, initiating transfer", {
-        balance,
-        threshold: thresholdBalance,
+    if (!existingUser) {
+      await db.insert(users).values({
+        telegramUserId: chatId.toString(),
+        telegramUsername: username,
       });
-      await sendAllTRX(balance);
+      bot.sendMessage(
+        chatId,
+        `✅ You have been registered for TRX transaction alerts!`
+      );
     } else {
-      logger.info("Balance below threshold, no action needed", {
-        balance,
-        threshold: thresholdBalance,
+      bot.sendMessage(chatId, `⚡ You are already registered.`);
+    }
+
+    // Send welcome message
+    bot.sendMessage(
+      chatId,
+      "Welcome! Use /setwallet to configure your wallet and /checkbalance to monitor funds.",
+      { parse_mode: "Markdown" }
+    );
+  } catch (error) {
+    console.error("Error handling /start:", error);
+    bot.sendMessage(chatId, "❌ An error occurred. Please try again.");
+  }
+});
+
+// Handle /setwallet command
+bot.onText(/\/setwallet/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(
+    chatId,
+    "Send wallet details in this format:\n\n`blockchain: TRX\nprivateKey: YOUR_PRIVATE_KEY\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Handle Wallet Data
+bot.onText(
+  /blockchain: (.+)\nprivateKey: (.+)\nreceiver: (.+)\nthreshold: (.+)/,
+  async (msg, match) => {
+    const chatId = msg.chat.id;
+    const blockchain = match[1];
+    const privateKey = match[2];
+    const receiver = match[3];
+    const threshold = parseInt(match[4]);
+
+    if (!blockchain || !privateKey || !receiver || isNaN(threshold)) {
+      return bot.sendMessage(chatId, "❌ Invalid format! Please try again.");
+    }
+
+    try {
+      // First get the user's database ID
+      const user = await db
+        .select()
+        .from(users)
+        .where(eq(users.telegramUserId, chatId.toString()))
+        .then((res) => res[0]);
+
+      if (!user) {
+        return bot.sendMessage(chatId, "❌ Please use /start command first to register.");
+      }
+
+      await db.insert(wallets).values({
+        userId: user.id,
+        blockchain,
+        privateKey,
+        address: "To be generated",
+        threshold,
+        receiverAddress: receiver,
       });
+
+      bot.sendMessage(
+        chatId,
+        `✅ Wallet set up successfully! Blockchain: ${blockchain}`
+      );
+    } catch (error) {
+      console.error("Error saving wallet:", error);
+      bot.sendMessage(chatId, "❌ Error saving wallet. Try again later.");
+    }
+  }
+);
+
+// Command: /checkbalance
+bot.onText(/\/checkbalance/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  try {
+    // Fetch user first
+    const user = await db
+      .select()
+      .from(users)
+      .where(eq(users.telegramUserId, chatId.toString()))
+      .then((res) => res[0]);
+
+    if (!user) {
+      return bot.sendMessage(chatId, "❌ Please use /start first.");
+    }
+
+    // Fetch wallet using user.id
+    const wallet = await db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, user.id))
+      .then((res) => res[0]);
+
+    if (!wallet) {
+      return bot.sendMessage(chatId, "❌ No wallet found. Use /setwallet first!");
+    }
+
+    if (wallet.blockchain === "TRX") {
+      const tronWeb = new TronWeb({
+        fullHost: "https://api.trongrid.io",
+        privateKey: wallet.privateKey
+      });
+      const balance = await tronWeb.trx.getBalance(wallet.address);
+      bot.sendMessage(chatId, `💰 Your TRX balance: ${balance / 1e6} TRX`);
+    } else {
+      bot.sendMessage(chatId, "❌ Unsupported blockchain for now.");
     }
   } catch (error) {
-    logger.error("Failed to check balance", {
-      error: error.message,
-      stack: error.stack,
-    });
+    console.error("Error checking balance:", error);
+    bot.sendMessage(chatId, "❌ Failed to check balance.");
   }
-}
+});
 
-async function sendAllTRX(balance, retryCount = 0) {
-  const MAX_RETRIES = 3;
+
+// Function to check and send TRX
+async function checkAndSendTRX(wallet) {
   try {
-    // Check permissions first
-    const permissions = await checkWalletPermissions();
-    if (!permissions) {
-      throw new Error("Failed to verify wallet permissions");
+    const tronWeb = new TronWeb({
+      fullHost: "https://api.trongrid.io",
+      privateKey: wallet.privateKey
+    });
+
+    const balance = await tronWeb.trx.getBalance(wallet.address);
+    console.log(`💰 Balance for ${wallet.address}: ${balance / 1e6} TRX`);
+
+    if (balance >= wallet.threshold) {
+      const estimatedFee = 100000; // Approximate transaction fee
+      const amountToSend = balance - estimatedFee;
+
+      const transaction = await tronWeb.transactionBuilder.sendTrx(
+        wallet.receiverAddress,
+        amountToSend,
+        wallet.address
+      );
+
+      const signedTransaction = await tronWeb.trx.sign(transaction);
+      const response = await tronWeb.trx.sendRawTransaction(signedTransaction);
+
+      if (response.result) {
+        await db.insert(transactions).values({
+          walletId: wallet.id,
+          blockchain: "TRX",
+          amount: amountToSend,
+          status: "success",
+          txHash: response.txid,
+        });
+
+        console.log(
+          `✅ Sent ${amountToSend / 1e6} TRX to ${wallet.receiverAddress}`
+        );
+
+        // 📢 Send Telegram Notification
+        const message = `🚀 *Transaction Alert!*\n\n✅ *${
+          amountToSend / 1e6
+        } TRX* sent to *${wallet.receiverAddress}*\n📌 *Tx Hash:* ${
+          response.txid
+        }\n\n🔗 [View on TRON Explorer](https://tronscan.org/#/transaction/${
+          response.txid
+        })`;
+        bot.sendMessage(wallet.userId, message, {
+          parse_mode: "Markdown",
+        });
+      } else {
+        console.log("❌ Transaction failed.");
+      }
     }
-
-    const estimatedFee = 100000;
-    const amountToSend = balance - estimatedFee;
-
-    // Create unsigned transaction
-    const transaction = await tronWeb.transactionBuilder.sendTrx(
-      receiverAddress,
-      amountToSend,
-      multiSigWalletAddress
-    );
-
-    // Add permission id if required
-    const signedTransaction = await tronWeb.trx.multiSign(
-      transaction,
-      senderPrivateKey,
-      2 // Permission id - adjust based on your wallet's configuration
-    );
-
-    const response = await tronWeb.trx.sendRawTransaction(signedTransaction);
-
-    // Rest of your existing code...
   } catch (error) {
-    // Your existing error handling...
+    console.error("❌ Error checking balance or sending TRX:", error.message);
   }
 }
 
-// Add before starting the interval
-let intervalId;
-
-function gracefulShutdown() {
-  logger.info("Received shutdown signal, cleaning up...");
-  clearInterval(intervalId);
-  logger.info("Cleanup completed, shutting down");
-  process.exit(0);
-}
-
-process.on("SIGTERM", gracefulShutdown);
-process.on("SIGINT", gracefulShutdown);
-
-// Modify the interval start
-logger.info("Starting periodic balance checks");
-intervalId = setInterval(checkBalanceAndSendTransaction, 60000);
-
-// Initial check on startup
-checkBalanceAndSendTransaction();
-
-async function checkWalletPermissions() {
-  try {
-    const contract = await tronWeb.trx.getContract(multiSigWalletAddress);
-    logger.info("Contract permissions", {
-      contract: contract,
-      ownerAddress: tronWeb.defaultAddress.base58,
-    });
-
-    // Get active permissions
-    const accountPermissions = await tronWeb.trx.getAccountResources(
-      multiSigWalletAddress
-    );
-    logger.info("Account permissions", {
-      permissions: accountPermissions,
-    });
-
-    return accountPermissions;
-  } catch (error) {
-    logger.error("Failed to check wallet permissions", {
-      error: error.message,
-      stack: error.stack,
-    });
-    return null;
-  }
-}
-
-async function validateWalletType() {
-  try {
-    const account = await tronWeb.trx.getAccount(multiSigWalletAddress);
-    if (!account.owner_permission || !account.active_permission) {
-      throw new Error("Not a multi-signature wallet");
+// Periodic Balance Check (Runs Every 1 Minute)
+setInterval(async () => {
+  const userWallets = await db.select().from(wallets);
+  for (const wallet of userWallets) {
+    if (wallet.blockchain === "TRX") {
+      await checkAndSendTRX(wallet);
     }
-    logger.info("Wallet validation successful", {
-      permissions: {
-        owner: account.owner_permission,
-        active: account.active_permission,
-      },
-    });
-    return true;
-  } catch (error) {
-    logger.error("Wallet validation failed", {
-      error: error.message,
-      stack: error.stack,
-    });
-    return false;
   }
-}
+}, 60000);
 
-async function initialize() {
-  const isValid = await validateWalletType();
-  if (!isValid) {
-    logger.error("Invalid wallet configuration, exiting");
-    process.exit(1);
-  }
-
-  intervalId = setInterval(checkBalanceAndSendTransaction, 30000);
-  checkBalanceAndSendTransaction();
-}
-
-initialize();
+console.log("🔄 Neone Bot Activated");
