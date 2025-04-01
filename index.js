@@ -3,9 +3,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const { db } = require("./db/db");
 const { wallets, transactions } = require("./db/schema");
 const { eq } = require("drizzle-orm");
-const TronWeb = require("tronweb").default;
+const { TronWeb } = require("tronweb");
 const { users } = require("./db/schema");
-
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -80,21 +79,42 @@ bot.onText(
         .then((res) => res[0]);
 
       if (!user) {
-        return bot.sendMessage(chatId, "❌ Please use /start command first to register.");
+        return bot.sendMessage(
+          chatId,
+          "❌ Please use /start command first to register."
+        );
       }
+
+      // Initialize TronWeb to generate address
+      const tronWeb = new TronWeb({
+        fullHost: "https://api.trongrid.io",
+        privateKey: privateKey
+      });
+
+      // Get the address from the private key
+      const address = tronWeb.address.fromPrivateKey(privateKey);
+
+      console.log("Wallet Data:", {
+        blockchain,
+        privateKey,
+        receiver,
+        threshold,
+        address
+      });
 
       await db.insert(wallets).values({
         userId: user.id,
         blockchain,
         privateKey,
-        address: "To be generated",
+        address: address,
         threshold,
         receiverAddress: receiver,
       });
 
       bot.sendMessage(
         chatId,
-        `✅ Wallet set up successfully! Blockchain: ${blockchain}`
+        `✅ Wallet set up successfully!\n\nBlockchain: ${blockchain}\nAddress: \`${address}\``,
+        { parse_mode: "Markdown" }
       );
     } catch (error) {
       console.error("Error saving wallet:", error);
@@ -127,13 +147,16 @@ bot.onText(/\/checkbalance/, async (msg) => {
       .then((res) => res[0]);
 
     if (!wallet) {
-      return bot.sendMessage(chatId, "❌ No wallet found. Use /setwallet first!");
+      return bot.sendMessage(
+        chatId,
+        "❌ No wallet found. Use /setwallet first!"
+      );
     }
 
     if (wallet.blockchain === "TRX") {
       const tronWeb = new TronWeb({
         fullHost: "https://api.trongrid.io",
-        privateKey: wallet.privateKey
+        privateKey: wallet.privateKey,
       });
       const balance = await tronWeb.trx.getBalance(wallet.address);
       bot.sendMessage(chatId, `💰 Your TRX balance: ${balance / 1e6} TRX`);
@@ -146,13 +169,12 @@ bot.onText(/\/checkbalance/, async (msg) => {
   }
 });
 
-
 // Function to check and send TRX
 async function checkAndSendTRX(wallet) {
   try {
     const tronWeb = new TronWeb({
       fullHost: "https://api.trongrid.io",
-      privateKey: wallet.privateKey
+      privateKey: wallet.privateKey,
     });
 
     const balance = await tronWeb.trx.getBalance(wallet.address);
