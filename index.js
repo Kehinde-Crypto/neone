@@ -8,6 +8,26 @@ const { users } = require("./db/schema");
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
+// Set up command menu
+bot.setMyCommands([
+  {
+    command: "start",
+    description: "Start the bot and get registered"
+  },
+  {
+    command: "setwallet",
+    description: "Add a new wallet for monitoring"
+  },
+  {
+    command: "listwallets",
+    description: "View all your configured wallets"
+  },
+  {
+    command: "checkbalance",
+    description: "Check your wallet balance"
+  }
+]);
+
 // Handle /start command
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
@@ -34,15 +54,70 @@ bot.onText(/\/start/, async (msg) => {
       bot.sendMessage(chatId, `⚡ You are already registered.`);
     }
 
-    // Send welcome message
+    // Send welcome message with menu button
     bot.sendMessage(
       chatId,
-      "Welcome! Use /setwallet to configure your wallet and /checkbalance to monitor funds.",
-      { parse_mode: "Markdown" }
+      "Welcome to the TRX Transaction Bot! 🚀\n\n" +
+      "I'll help you monitor your TRX wallets and automatically transfer funds when they reach your specified threshold.\n\n" +
+      "Use the menu button (/) to see all available commands, or click the button below:",
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          keyboard: [["/start", "/setwallet"], ["/listwallets", "/checkbalance"]],
+          resize_keyboard: true,
+          one_time_keyboard: true
+        }
+      }
     );
   } catch (error) {
     console.error("Error handling /start:", error);
     bot.sendMessage(chatId, "❌ An error occurred. Please try again.");
+  }
+});
+
+// Handle /listwallets command
+bot.onText(/\/listwallets/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  try {
+    // Fetch user first
+    const user = await db
+      .select()
+      .from(users)
+      .where(eq(users.telegramUserId, chatId.toString()))
+      .then((res) => res[0]);
+
+    if (!user) {
+      return bot.sendMessage(chatId, "❌ Please use /start first.");
+    }
+
+    // Fetch all wallets for the user
+    const userWallets = await db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, user.id));
+
+    if (userWallets.length === 0) {
+      return bot.sendMessage(
+        chatId,
+        "❌ No wallets found. Use /setwallet to add a wallet!"
+      );
+    }
+
+    // Create a formatted message with wallet details
+    let message = "📋 *Your Wallets:*\n\n";
+    for (const wallet of userWallets) {
+      message += `*Wallet ${wallet.id}*\n`;
+      message += `Blockchain: ${wallet.blockchain}\n`;
+      message += `Address: \`${wallet.address}\`\n`;
+      message += `Receiver: \`${wallet.receiverAddress}\`\n`;
+      message += `Threshold: ${wallet.threshold / 1e6} TRX\n\n`;
+    }
+
+    bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+  } catch (error) {
+    console.error("Error listing wallets:", error);
+    bot.sendMessage(chatId, "❌ Failed to list wallets.");
   }
 });
 
@@ -51,7 +126,7 @@ bot.onText(/\/setwallet/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(
     chatId,
-    "Send wallet details in this format:\n\n`blockchain: TRX\nprivateKey: YOUR_PRIVATE_KEY\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`",
+    "Send wallet details in this format:\n\n`blockchain: TRX\nprivateKey: YOUR_PRIVATE_KEY\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`\n\nYou can add multiple wallets by using this command multiple times.",
     { parse_mode: "Markdown" }
   );
 });
