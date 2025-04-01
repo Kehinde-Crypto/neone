@@ -130,12 +130,17 @@ bot.onText(/\/setwallet/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(
     chatId,
-    "Send wallet details in this format:\n\n`blockchain: TRX\nprivateKey: YOUR_PRIVATE_KEY\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`\n\nYou can add multiple wallets by using this command multiple times.",
+    "Send wallet details in this format:\n\n" +
+    "For Private Key:\n" +
+    "`blockchain: TRX\nprivateKey: YOUR_PRIVATE_KEY\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`\n\n" +
+    "For Seed Phrase:\n" +
+    "`blockchain: TRX\nseedPhrase: YOUR 12 WORD SEED PHRASE\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`\n\n" +
+    "You can add multiple wallets by using this command multiple times.",
     { parse_mode: "Markdown" }
   );
 });
 
-// Handle Wallet Data
+// Handle Wallet Data with Private Key
 bot.onText(
   /blockchain: (.+)\nprivateKey: (.+)\nreceiver: (.+)\nthreshold: (.+)/,
   async (msg, match) => {
@@ -150,57 +155,92 @@ bot.onText(
     }
 
     try {
-      // First get the user's database ID
-      const user = await db
-        .select()
-        .from(users)
-        .where(eq(users.telegramUserId, chatId.toString()))
-        .then((res) => res[0]);
-
-      if (!user) {
-        return bot.sendMessage(
-          chatId,
-          "❌ Please use /start command first to register."
-        );
-      }
-
-      // Initialize TronWeb to generate address
-      const tronWeb = new TronWeb({
-        fullHost: "https://api.trongrid.io",
-        privateKey: privateKey
-      });
-
-      // Get the address from the private key
-      const address = tronWeb.address.fromPrivateKey(privateKey);
-
-      console.log("Wallet Data:", {
-        blockchain,
-        privateKey,
-        receiver,
-        threshold,
-        address
-      });
-
-      await db.insert(wallets).values({
-        userId: user.id,
-        blockchain,
-        privateKey,
-        address: address,
-        threshold,
-        receiverAddress: receiver,
-      });
-
-      bot.sendMessage(
-        chatId,
-        `✅ Wallet set up successfully!\n\nBlockchain: ${blockchain}\nAddress: \`${address}\``,
-        { parse_mode: "Markdown" }
-      );
+      await setupWallet(chatId, blockchain, privateKey, receiver, threshold, "privateKey");
     } catch (error) {
       console.error("Error saving wallet:", error);
       bot.sendMessage(chatId, "❌ Error saving wallet. Try again later.");
     }
   }
 );
+
+// Handle Wallet Data with Seed Phrase
+bot.onText(
+  /blockchain: (.+)\nseedPhrase: (.+)\nreceiver: (.+)\nthreshold: (.+)/,
+  async (msg, match) => {
+    const chatId = msg.chat.id;
+    const blockchain = match[1];
+    const seedPhrase = match[2];
+    const receiver = match[3];
+    const threshold = parseInt(match[4]);
+
+    if (!blockchain || !seedPhrase || !receiver || isNaN(threshold)) {
+      return bot.sendMessage(chatId, "❌ Invalid format! Please try again.");
+    }
+
+    try {
+      await setupWallet(chatId, blockchain, seedPhrase, receiver, threshold, "seedPhrase");
+    } catch (error) {
+      console.error("Error saving wallet:", error);
+      bot.sendMessage(chatId, "❌ Error saving wallet. Try again later.");
+    }
+  }
+);
+
+// Function to setup wallet (handles both private key and seed phrase)
+async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType) {
+  // First get the user's database ID
+  const user = await db
+    .select()
+    .from(users)
+    .where(eq(users.telegramUserId, chatId.toString()))
+    .then((res) => res[0]);
+
+  if (!user) {
+    return bot.sendMessage(
+      chatId,
+      "❌ Please use /start command first to register."
+    );
+  }
+
+  // Initialize TronWeb
+  const tronWeb = new TronWeb({
+    fullHost: "https://api.trongrid.io",
+    ...(keyType === "privateKey" ? { privateKey: key } : {})
+  });
+
+  let address;
+  if (keyType === "privateKey") {
+    // Generate address from private key
+    address = tronWeb.address.fromPrivateKey(key);
+  } else {
+    // Generate address from seed phrase
+    const account = await tronWeb.createAccountWithMnemonic(key);
+    address = account.address.base58;
+  }
+
+  console.log("Wallet Data:", {
+    blockchain,
+    keyType,
+    receiver,
+    threshold,
+    address
+  });
+
+  await db.insert(wallets).values({
+    userId: user.id,
+    blockchain,
+    privateKey: key, // Store either private key or seed phrase
+    address: address,
+    threshold,
+    receiverAddress: receiver,
+  });
+
+  bot.sendMessage(
+    chatId,
+    `✅ Wallet set up successfully!\n\nBlockchain: ${blockchain}\nAddress: \`${address}\``,
+    { parse_mode: "Markdown" }
+  );
+}
 
 // Command: /checkbalance
 bot.onText(/\/checkbalance/, async (msg) => {
@@ -218,30 +258,40 @@ bot.onText(/\/checkbalance/, async (msg) => {
       return bot.sendMessage(chatId, "❌ Please use /start first.");
     }
 
-    // Fetch wallet using user.id
-    const wallet = await db
+    // Fetch all wallets for the user
+    const userWallets = await db
       .select()
       .from(wallets)
-      .where(eq(wallets.userId, user.id))
-      .then((res) => res[0]);
+      .where(eq(wallets.userId, user.id));
 
-    if (!wallet) {
+    if (userWallets.length === 0) {
       return bot.sendMessage(
         chatId,
-        "❌ No wallet found. Use /setwallet first!"
+        "❌ No wallets found. Use /setwallet to add a wallet!"
       );
     }
 
-    if (wallet.blockchain === "TRX") {
-      const tronWeb = new TronWeb({
-        fullHost: "https://api.trongrid.io",
-        privateKey: wallet.privateKey,
-      });
-      const balance = await tronWeb.trx.getBalance(wallet.address);
-      bot.sendMessage(chatId, `💰 Your TRX balance: ${balance / 1e6} TRX`);
-    } else {
-      bot.sendMessage(chatId, "❌ Unsupported blockchain for now.");
+    let message = "💰 *Wallet Balances:*\n\n";
+    
+    for (const wallet of userWallets) {
+      if (wallet.blockchain === "TRX") {
+        const tronWeb = new TronWeb({
+          fullHost: "https://api.trongrid.io",
+          privateKey: wallet.privateKey,
+        });
+        const balance = await tronWeb.trx.getBalance(wallet.address);
+        message += `*Wallet ${wallet.id}*\n`;
+        message += `Address: \`${wallet.address}\`\n`;
+        message += `Balance: ${balance / 1e6} TRX\n`;
+        message += `Threshold: ${wallet.threshold / 1e6} TRX\n\n`;
+      } else {
+        message += `*Wallet ${wallet.id}*\n`;
+        message += `Blockchain: ${wallet.blockchain}\n`;
+        message += `Status: Unsupported blockchain\n\n`;
+      }
     }
+
+    bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
   } catch (error) {
     console.error("Error checking balance:", error);
     bot.sendMessage(chatId, "❌ Failed to check balance.");
