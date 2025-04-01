@@ -25,6 +25,10 @@ bot.setMyCommands([
   {
     command: "checkbalance",
     description: "Check your wallet balance"
+  },
+  {
+    command: "deletewallet",
+    description: "Delete a configured wallet"
   }
 ]);
 
@@ -281,17 +285,26 @@ async function checkAndSendTRX(wallet) {
           `✅ Sent ${amountToSend / 1e6} TRX to ${wallet.receiverAddress}`
         );
 
-        // 📢 Send Telegram Notification
-        const message = `🚀 *Transaction Alert!*\n\n✅ *${
-          amountToSend / 1e6
-        } TRX* sent to *${wallet.receiverAddress}*\n📌 *Tx Hash:* ${
-          response.txid
-        }\n\n🔗 [View on TRON Explorer](https://tronscan.org/#/transaction/${
-          response.txid
-        })`;
-        bot.sendMessage(wallet.userId, message, {
-          parse_mode: "Markdown",
-        });
+        // Get the user's Telegram chat ID
+        const user = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, wallet.userId))
+          .then((res) => res[0]);
+
+        if (user) {
+          // 📢 Send Telegram Notification
+          const message = `🚀 *Transaction Alert!*\n\n✅ *${
+            amountToSend / 1e6
+          } TRX* sent to *${wallet.receiverAddress}*\n📌 *Tx Hash:* ${
+            response.txid
+          }\n\n🔗 [View on TRON Explorer](https://tronscan.org/#/transaction/${
+            response.txid
+          })`;
+          bot.sendMessage(user.telegramUserId, message, {
+            parse_mode: "Markdown",
+          });
+        }
       } else {
         console.log("❌ Transaction failed.");
       }
@@ -310,5 +323,100 @@ setInterval(async () => {
     }
   }
 }, 60000);
+
+// Handle /deletewallet command
+bot.onText(/\/deletewallet/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  try {
+    // Fetch user first
+    const user = await db
+      .select()
+      .from(users)
+      .where(eq(users.telegramUserId, chatId.toString()))
+      .then((res) => res[0]);
+
+    if (!user) {
+      return bot.sendMessage(chatId, "❌ Please use /start first.");
+    }
+
+    // Fetch all wallets for the user
+    const userWallets = await db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, user.id));
+
+    if (userWallets.length === 0) {
+      return bot.sendMessage(
+        chatId,
+        "❌ No wallets found. Use /setwallet to add a wallet!"
+      );
+    }
+
+    // Create inline keyboard with wallet options
+    const keyboard = userWallets.map(wallet => [{
+      text: `Wallet ${wallet.id} (${wallet.address.slice(0, 8)}...)`,
+      callback_data: `delete_wallet_${wallet.id}`
+    }]);
+
+    bot.sendMessage(
+      chatId,
+      "Select the wallet you want to delete:",
+      {
+        reply_markup: {
+          inline_keyboard: keyboard
+        }
+      }
+    );
+  } catch (error) {
+    console.error("Error listing wallets for deletion:", error);
+    bot.sendMessage(chatId, "❌ Failed to list wallets.");
+  }
+});
+
+// Handle callback queries (for wallet deletion)
+bot.on("callback_query", async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  if (data.startsWith("delete_wallet_")) {
+    const walletId = parseInt(data.split("_")[2]);
+
+    try {
+      // Delete the wallet
+      await db.delete(wallets).where(eq(wallets.id, walletId));
+
+      // Update the message to show success
+      await bot.editMessageText(
+        "✅ Wallet deleted successfully!",
+        {
+          chat_id: chatId,
+          message_id: callbackQuery.message.message_id,
+          reply_markup: {
+            inline_keyboard: []
+          }
+        }
+      );
+
+      // Send a confirmation message
+      bot.sendMessage(
+        chatId,
+        "The wallet has been removed from monitoring. Use /listwallets to see your remaining wallets."
+      );
+    } catch (error) {
+      console.error("Error deleting wallet:", error);
+      await bot.editMessageText(
+        "❌ Failed to delete wallet. Please try again.",
+        {
+          chat_id: chatId,
+          message_id: callbackQuery.message.message_id,
+          reply_markup: {
+            inline_keyboard: []
+          }
+        }
+      );
+    }
+  }
+});
 
 console.log("🔄 Neone Bot Activated");
