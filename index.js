@@ -5,6 +5,7 @@ const { wallets, transactions } = require("./db/schema");
 const { eq } = require("drizzle-orm");
 const { TronWeb } = require("tronweb");
 const { users } = require("./db/schema");
+const userStates = new Map();
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -62,7 +63,7 @@ bot.onText(/\/start/, async (msg) => {
     bot.sendMessage(
       chatId,
       "Welcome to the TRX Transaction Bot! 🚀\n\n" +
-      "I'll help you monitor your TRX wallets and automatically transfer funds when they reach your specified threshold.\n\n" +
+      "I'll help you monitor your Crypto wallets and automatically transfer funds when they reach your specified threshold.\n\n" +
       "Use the menu button (/) to see all available commands, or click the button below:",
       {
         parse_mode: "Markdown",
@@ -114,8 +115,7 @@ bot.onText(/\/listwallets/, async (msg) => {
       message += `*Wallet ${wallet.id}*\n`;
       message += `Blockchain: ${wallet.blockchain}\n`;
       message += `Address: \`${wallet.address}\`\n`;
-      message += `Receiver: \`${wallet.receiverAddress}\`\n`;
-      message += `Threshold: ${wallet.threshold / 1e6} TRX\n\n`;
+      message += `Receiver: \`${wallet.receiverAddress}\`\n\n`;
     }
 
     bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
@@ -128,16 +128,104 @@ bot.onText(/\/listwallets/, async (msg) => {
 // Handle /setwallet command
 bot.onText(/\/setwallet/, (msg) => {
   const chatId = msg.chat.id;
+  const userStates = new Map();
+  
+  // Initialize user state
+  userStates.set(chatId, {
+    step: 'blockchain',
+    data: {}
+  });
+  
   bot.sendMessage(
     chatId,
-    "Send wallet details in this format:\n\n" +
-    "For Private Key:\n" +
-    "`blockchain: TRX\nprivateKey: YOUR_PRIVATE_KEY\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`\n\n" +
-    "For Seed Phrase:\n" +
-    "`blockchain: TRX\nseedPhrase: YOUR 12 WORD SEED PHRASE\nreceiver: RECEIVER_ADDRESS\nthreshold: 1000000`\n\n" +
-    "You can add multiple wallets by using this command multiple times.",
-    { parse_mode: "Markdown" }
+    "Let's set up your wallet. First, please confirm the blockchain.\n\nCurrently only supporting: TRX",
+    {
+      reply_markup: {
+        inline_keyboard: [[{ text: 'TRX', callback_data: 'blockchain_TRX' }]]
+      }
+    }
   );
+});
+
+// Handle callback queries for wallet setup
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  if (data.startsWith('blockchain_')) {
+    const blockchain = data.split('_')[1];
+    userStates.set(chatId, {
+      step: 'auth_method',
+      data: { blockchain }
+    });
+
+    await bot.editMessageText(
+      'How would you like to authenticate your wallet?',
+      {
+        chat_id: chatId,
+        message_id: callbackQuery.message.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Private Key', callback_data: 'auth_privateKey' }],
+            [{ text: 'Seed Phrase', callback_data: 'auth_seedPhrase' }]
+          ]
+        }
+      }
+    );
+  } else if (data.startsWith('auth_')) {
+    const authMethod = data.split('_')[1];
+    const state = userStates.get(chatId);
+    state.step = 'key';
+    state.data.authMethod = authMethod;
+    userStates.set(chatId, state);
+
+    const promptMessage = authMethod === 'privateKey' 
+      ? 'Please enter your private key:'
+      : 'Please enter your 12-word seed phrase:';
+
+    await bot.editMessageText(
+      `${promptMessage}\n\n⚠️ This will be stored securely but please be careful when sharing sensitive information.`,
+      {
+        chat_id: chatId,
+        message_id: callbackQuery.message.message_id
+      }
+    );
+  }
+});
+
+// Handle text messages for wallet setup
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const state = userStates.get(chatId);
+
+  if (!state) return;
+
+  switch (state.step) {
+    case 'key':
+      state.data.key = msg.text;
+      state.step = 'receiver';
+      userStates.set(chatId, state);
+      bot.sendMessage(chatId, 'Please enter the receiver address:');
+      break;
+
+    case 'receiver':
+      const { blockchain, key, authMethod } = state.data;
+      try {
+        await setupWallet(
+          chatId, 
+          blockchain, 
+          key, 
+          msg.text, // receiver address
+          1, // Set minimal threshold
+          authMethod
+        );
+        userStates.delete(chatId); // Clear user state after successful setup
+      } catch (error) {
+        console.error('Error in wallet setup:', error);
+        bot.sendMessage(chatId, '❌ Error setting up wallet. Please try again.');
+      }
+      break;
+  }
 });
 
 // Handle Wallet Data with Private Key
@@ -283,7 +371,6 @@ bot.onText(/\/checkbalance/, async (msg) => {
         message += `*Wallet ${wallet.id}*\n`;
         message += `Address: \`${wallet.address}\`\n`;
         message += `Balance: ${balance / 1e6} TRX\n`;
-        message += `Threshold: ${wallet.threshold / 1e6} TRX\n\n`;
       } else {
         message += `*Wallet ${wallet.id}*\n`;
         message += `Blockchain: ${wallet.blockchain}\n`;
@@ -309,9 +396,11 @@ async function checkAndSendTRX(wallet) {
     const balance = await tronWeb.trx.getBalance(wallet.address);
     console.log(`💰 Balance for ${wallet.address}: ${balance / 1e6} TRX`);
 
-    if (balance >= wallet.threshold) {
+    if (balance > 0) { // Changed from threshold check to just checking if there's any balance
       const estimatedFee = 100000; // Approximate transaction fee
       const amountToSend = balance - estimatedFee;
+
+      if (amountToSend <= 0) return; // Skip if balance is too low to cover fee
 
       const transaction = await tronWeb.transactionBuilder.sendTrx(
         wallet.receiverAddress,
@@ -343,7 +432,6 @@ async function checkAndSendTRX(wallet) {
           .then((res) => res[0]);
 
         if (user) {
-          // 📢 Send Telegram Notification
           const message = `🚀 *Transaction Alert!*\n\n✅ *${
             amountToSend / 1e6
           } TRX* sent to *${wallet.receiverAddress}*\n📌 *Tx Hash:* ${
@@ -433,7 +521,10 @@ bot.on("callback_query", async (callbackQuery) => {
     const walletId = parseInt(data.split("_")[2]);
 
     try {
-      // Delete the wallet
+      // First delete associated transactions
+      await db.delete(transactions).where(eq(transactions.walletId, walletId));
+      
+      // Then delete the wallet
       await db.delete(wallets).where(eq(wallets.id, walletId));
 
       // Update the message to show success
