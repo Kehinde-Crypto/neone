@@ -226,6 +226,7 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
   if (!user) {
     return bot.sendMessage(chatId, "❌ Please use /start command first to register.");
   }
+
   let address;
   switch (blockchain) {
     case "TRX": {
@@ -274,7 +275,7 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
           const addrnode = root.derive("m/44'/0'/0'/0/0");
           keyPair = ECPair.fromPrivateKey(addrnode.privateKey, { network });
         }
-        // FIX: Convert public key to Buffer when using p2pkh
+        // Convert public key to Buffer for p2pkh
         const { address: btcAddress } = bitcoin.payments.p2pkh({
           pubkey: Buffer.from(keyPair.publicKey),
           network,
@@ -297,9 +298,11 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
     default:
       throw new Error("Unsupported blockchain");
   }
+
   if (!address) {
     throw new Error("Failed to generate wallet address");
   }
+
   await db.insert(wallets).values({
     userId: user.id,
     blockchain,
@@ -308,6 +311,7 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
     threshold: threshold || 1,
     receiverAddress: receiver,
   });
+
   bot.sendMessage(
     chatId,
     `✅ Wallet set up successfully!\n\nBlockchain: ${blockchain}\nAddress: \`${address}\``,
@@ -315,7 +319,7 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
   );
 }
 
-// Handle /checkbalance command
+// Command: /checkbalance
 bot.onText(/\/checkbalance/, async (msg) => {
   const chatId = msg.chat.id;
   try {
@@ -327,16 +331,21 @@ bot.onText(/\/checkbalance/, async (msg) => {
     if (!user) {
       return bot.sendMessage(chatId, "❌ Please use /start first.");
     }
+
     const userWallets = await db
       .select()
       .from(wallets)
       .where(eq(wallets.userId, user.id));
+
     if (userWallets.length === 0) {
       return bot.sendMessage(chatId, "❌ No wallets found. Use /setwallet to add a wallet!");
     }
+
     let message = "💰 *Wallet Balances:*\n\n";
+
     for (const wallet of userWallets) {
       if (wallet.blockchain === "TRX") {
+        // TRX Balance
         const tronWeb = new TronWeb({
           fullHost: "https://api.trongrid.io",
           privateKey: wallet.privateKey,
@@ -346,12 +355,42 @@ bot.onText(/\/checkbalance/, async (msg) => {
         message += `Address: \`${wallet.address}\`\n`;
         message += `Balance: ${balance / 1e6} TRX\n\n`;
       } else if (wallet.blockchain === "BTC") {
-        message += `*Wallet ${wallet.id}*\nBlockchain: BTC\nStatus: Automatic sending enabled (clearing out account)\n\n`;
+        // BTC Balance
+        try {
+          const res = await fetch(`https://blockchain.info/unspent?active=${wallet.address}`);
+          // If the address has no UTXOs, blockchain.info responds with a 500 or an error
+          if (!res.ok) {
+            message += `*Wallet ${wallet.id}*\n`;
+            message += `Address: \`${wallet.address}\`\n`;
+            message += `Balance: 0 BTC (no UTXOs)\n\n`;
+            continue;
+          }
+          const jsonData = await res.json();
+          if (!jsonData.unspent_outputs || jsonData.unspent_outputs.length === 0) {
+            message += `*Wallet ${wallet.id}*\n`;
+            message += `Address: \`${wallet.address}\`\n`;
+            message += `Balance: 0 BTC (no UTXOs)\n\n`;
+          } else {
+            const balanceSats = jsonData.unspent_outputs.reduce(
+              (acc, utxo) => acc + utxo.value,
+              0
+            );
+            const balanceBtc = balanceSats / 1e8;
+            message += `*Wallet ${wallet.id}*\n`;
+            message += `Address: \`${wallet.address}\`\n`;
+            message += `Balance: ${balanceBtc} BTC\n\n`;
+          }
+        } catch (error) {
+          console.error("Error fetching BTC UTXOs:", error);
+          message += `*Wallet ${wallet.id}*\nAddress: \`${wallet.address}\`\nBalance: Unknown (API error)\n\n`;
+        }
       } else {
         message += `*Wallet ${wallet.id}*\n`;
-        message += `Blockchain: ${wallet.blockchain}\nStatus: Unsupported blockchain\n\n`;
+        message += `Blockchain: ${wallet.blockchain}\n`;
+        message += `Status: Unsupported blockchain\n\n`;
       }
     }
+
     bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
   } catch (error) {
     console.error("Error checking balance:", error);
@@ -365,6 +404,7 @@ async function checkAndSendTRX(wallet) {
     let balance = 0;
     let amountToSend = 0;
     let response;
+
     switch (wallet.blockchain) {
       case "TRX": {
         const tronWeb = new TronWeb({
@@ -376,6 +416,7 @@ async function checkAndSendTRX(wallet) {
           const estimatedFee = 100000;
           amountToSend = balance - estimatedFee;
           if (amountToSend <= 0) return;
+
           const transaction = await tronWeb.transactionBuilder.sendTrx(
             wallet.receiverAddress,
             amountToSend,
@@ -386,24 +427,28 @@ async function checkAndSendTRX(wallet) {
         }
         break;
       }
+
       case "BTC":
         try {
           const network = bitcoin.networks.bitcoin;
-          // FIX: Reconstruct keyPair from WIF directly
           const keyPair = ECPair.fromWIF(wallet.privateKey, network);
-          // Get UTXOs from BTC API
+
           const utxoResponse = await fetch(`https://blockchain.info/unspent?active=${wallet.address}`);
           const utxoData = await utxoResponse.json();
+
           if (utxoData.unspent_outputs && utxoData.unspent_outputs.length > 0) {
             const utxos = utxoData.unspent_outputs;
             balance = utxos.reduce((acc, utxo) => acc + utxo.value, 0);
+
             if (balance > 0) {
-              const feeRate = 10; // Satoshis per byte
-              const estimatedSize = 180;
+              const feeRate = 10; // satoshis/byte
+              const estimatedSize = 180; // approximate
               const fee = estimatedSize * feeRate;
-              // For BTC, send the entire balance (clear out account)
+
+              // Clear out entire balance
               amountToSend = balance - fee;
               if (amountToSend <= 0) return;
+
               const psbt = new bitcoin.Psbt({ network });
               utxos.forEach((utxo) => {
                 psbt.addInput({
@@ -428,6 +473,7 @@ async function checkAndSendTRX(wallet) {
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
                 body: `tx=${txHex}`,
               });
+
               if (broadcastResponse.ok) {
                 response = { result: true, txid: tx.getId() };
               }
@@ -437,13 +483,8 @@ async function checkAndSendTRX(wallet) {
           console.error("Error processing BTC transaction:", error);
         }
         break;
-      case "ETH":
-        // Placeholder for Ethereum logic
-        break;
-      case "SOL":
-        // Placeholder for Solana logic
-        break;
     }
+
     if (response && response.result) {
       await db.insert(transactions).values({
         walletId: wallet.id,
@@ -452,11 +493,13 @@ async function checkAndSendTRX(wallet) {
         status: "success",
         txHash: response.txid,
       });
+
       const user = await db
         .select()
         .from(users)
         .where(eq(users.id, wallet.userId))
         .then((res) => res[0]);
+
       if (user) {
         const message = `🚀 *Transaction Alert!*\n\n✅ *${
           wallet.blockchain === "BTC" ? amountToSend / 1e8 : amountToSend / 1e6
