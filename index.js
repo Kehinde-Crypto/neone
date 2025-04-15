@@ -26,7 +26,7 @@ const supportedBTCPaths = [
 ];
 
 //
-// UTIL: Derive BTC wallet from a seed phrase using multiple derivation paths
+// Utility: Derive a BTC wallet from a seed phrase using multiple derivation paths
 //
 async function deriveBTCWallet(seedPhrase) {
   const normalizedSeed = seedPhrase.trim().replace(/\s+/g, " ").toLowerCase();
@@ -41,10 +41,10 @@ async function deriveBTCWallet(seedPhrase) {
 
   for (const path of supportedBTCPaths) {
     try {
+      // Use hdkey's derive method (not derivePath)
       const child = root.derive(path);
       if (!child.privateKey) continue;
 
-      // Use p2pkh as a first option (legacy) – you might try other payment schemes here
       const { address } = bitcoin.payments.p2pkh({
         pubkey: Buffer.from(child.publicKey),
         network: bitcoin.networks.bitcoin,
@@ -73,7 +73,6 @@ async function deriveBTCWallet(seedPhrase) {
 // TELEGRAM BOT COMMANDS & FLOW
 //
 
-// Set up the bot command menu
 bot.setMyCommands([
   { command: "start", description: "Start the bot and get registered" },
   { command: "setwallet", description: "Add a new wallet for monitoring" },
@@ -87,9 +86,7 @@ bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || "Unknown";
   try {
-    const existingUser = await db
-      .select()
-      .from(users)
+    const existingUser = await db.select().from(users)
       .where(eq(users.telegramUserId, chatId.toString()))
       .then((res) => res[0]);
 
@@ -102,12 +99,11 @@ bot.onText(/\/start/, async (msg) => {
     } else {
       bot.sendMessage(chatId, `⚡ You are already registered.`);
     }
-
     bot.sendMessage(
       chatId,
       "Welcome to the TRX Transaction Bot! 🚀\n\n" +
-        "I'll help you monitor your crypto wallets and automatically transfer funds when they reach your specified threshold.\n\n" +
-        "Use the menu button (/) to see all available commands, or click the button below:",
+      "I'll help you monitor your crypto wallets and automatically transfer funds when they reach your specified threshold.\n\n" +
+      "Use the menu button (/) to see all available commands, or click the button below:",
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -127,15 +123,11 @@ bot.onText(/\/start/, async (msg) => {
 bot.onText(/\/listwallets/, async (msg) => {
   const chatId = msg.chat.id;
   try {
-    const user = await db
-      .select()
-      .from(users)
+    const user = await db.select().from(users)
       .where(eq(users.telegramUserId, chatId.toString()))
       .then((res) => res[0]);
     if (!user) return bot.sendMessage(chatId, "❌ Please use /start first.");
-    const userWallets = await db
-      .select()
-      .from(wallets)
+    const userWallets = await db.select().from(wallets)
       .where(eq(wallets.userId, user.id));
     if (userWallets.length === 0)
       return bot.sendMessage(chatId, "❌ No wallets found. Use /setwallet to add a wallet!");
@@ -214,7 +206,7 @@ bot.on("callback_query", async (callbackQuery) => {
   }
 });
 
-// Continue the interactive wallet setup flow
+// Continue interactive wallet setup flow
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const state = userStates.get(chatId);
@@ -229,7 +221,7 @@ bot.on("message", async (msg) => {
     state.data.receiver = msg.text;
     if (state.data.blockchain === "BTC") {
       try {
-        // For BTC, we use seed phrase derivation (if selected) and set threshold to 0 (clear entire balance)
+        // For BTC, set threshold to 0 (clear entire balance)
         await setupWallet(
           chatId,
           state.data.blockchain,
@@ -249,8 +241,9 @@ bot.on("message", async (msg) => {
     }
   } else if (state.step === "threshold") {
     const threshold = parseFloat(msg.text);
-    if (isNaN(threshold) || threshold <= 0)
+    if (isNaN(threshold) || threshold <= 0) {
       return bot.sendMessage(chatId, "❌ Please enter a valid positive number for threshold.");
+    }
     try {
       await setupWallet(
         chatId,
@@ -267,12 +260,9 @@ bot.on("message", async (msg) => {
   }
 });
 
-// Function to set up a wallet
+// Function to set up a wallet and save it to the database
 async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType) {
-  // Lookup the user by telegram id
-  const user = await db
-    .select()
-    .from(users)
+  const user = await db.select().from(users)
     .where(eq(users.telegramUserId, chatId.toString()))
     .then((res) => res[0]);
   if (!user) {
@@ -297,7 +287,6 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
         const network = bitcoin.networks.bitcoin;
         let keyPair;
         if (keyType === "privateKey") {
-          // Validate private key format (hex string)
           const cleanKey = key.trim().toLowerCase().replace("0x", "");
           if (!/^[0-9a-f]{64}$/.test(cleanKey)) {
             throw new Error(
@@ -310,7 +299,6 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
             throw new Error("Invalid private key value. Please check your key and try again.");
           }
         } else {
-          // Handle seed phrase: normalize input and attempt derivation using multiple paths
           const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
           const words = normalizedKey.split(" ");
           console.log(`Seed phrase received, word count: ${words.length}`);
@@ -324,15 +312,14 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
             console.error("Normalized seed phrase:", normalizedKey);
             throw new Error("Invalid seed phrase. Please check your words and try again.");
           }
-          // Attempt multiple derivation paths
+          // Try multiple derivation paths
           let derived = null;
           const seed = bip39.mnemonicToSeedSync(normalizedKey);
           const root = hdkey.fromMasterSeed(seed);
           for (const path of supportedBTCPaths) {
             try {
-              const child = root.derivePath(path);
+              const child = root.derive(path); // Use derive() instead of derivePath()
               if (child.privateKey) {
-                // Try legacy P2PKH address first:
                 const { address: derivedAddress } = bitcoin.payments.p2pkh({
                   pubkey: Buffer.from(child.publicKey),
                   network,
@@ -357,14 +344,14 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
           }
           keyPair = derived.keyPair;
         }
-        // Now build a BTC address from the keyPair using P2PKH (you might also try P2WPKH or P2SH)
+        // Convert public key to Buffer for p2pkh
         const { address: btcAddress } = bitcoin.payments.p2pkh({
           pubkey: Buffer.from(keyPair.publicKey),
           network,
         });
         if (!btcAddress) throw new Error("Failed to generate BTC address");
         address = btcAddress;
-        // Convert the key to WIF format for storage
+        // Convert the key to WIF format for compatibility
         key = keyPair.toWIF();
       } catch (error) {
         console.error("BTC wallet creation error:", error);
@@ -372,10 +359,10 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
       }
       break;
     case "ETH":
-      address = "ETH_ADDRESS"; // Placeholder for Ethereum
+      address = "ETH_ADDRESS"; // Placeholder
       break;
     case "SOL":
-      address = "SOL_ADDRESS"; // Placeholder for Solana
+      address = "SOL_ADDRESS"; // Placeholder
       break;
     default:
       throw new Error("Unsupported blockchain");
@@ -385,7 +372,6 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
     throw new Error("Failed to generate wallet address");
   }
 
-  // Save wallet info in the database
   await db.insert(wallets).values({
     userId: user.id,
     blockchain,
@@ -406,18 +392,13 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
 bot.onText(/\/checkbalance/, async (msg) => {
   const chatId = msg.chat.id;
   try {
-    const user = await db
-      .select()
-      .from(users)
+    const user = await db.select().from(users)
       .where(eq(users.telegramUserId, chatId.toString()))
       .then((res) => res[0]);
     if (!user) return bot.sendMessage(chatId, "❌ Please use /start first.");
 
-    const userWallets = await db
-      .select()
-      .from(wallets)
+    const userWallets = await db.select().from(wallets)
       .where(eq(wallets.userId, user.id));
-
     if (userWallets.length === 0)
       return bot.sendMessage(chatId, "❌ No wallets found. Use /setwallet to add a wallet!");
 
@@ -467,7 +448,7 @@ bot.onText(/\/checkbalance/, async (msg) => {
   }
 });
 
-// Function to check and send funds (sweeping) for TRX and BTC wallets
+// Function to check and send funds for TRX and BTC wallets
 async function checkAndSendTRX(wallet) {
   try {
     let balance = 0;
@@ -485,7 +466,6 @@ async function checkAndSendTRX(wallet) {
           const estimatedFee = 100000;
           amountToSend = balance - estimatedFee;
           if (amountToSend <= 0) return;
-
           const transaction = await tronWeb.transactionBuilder.sendTrx(
             wallet.receiverAddress,
             amountToSend,
@@ -500,22 +480,19 @@ async function checkAndSendTRX(wallet) {
       case "BTC":
         try {
           const network = bitcoin.networks.bitcoin;
-          // Reconstruct keyPair from WIF directly
+          // Reconstruct keyPair from the stored WIF
           const keyPair = ECPair.fromWIF(wallet.privateKey, network);
-
           const utxoResponse = await fetch(`https://blockchain.info/unspent?active=${wallet.address}`);
           const utxoData = await utxoResponse.json();
-
           if (utxoData.unspent_outputs && utxoData.unspent_outputs.length > 0) {
             const utxos = utxoData.unspent_outputs;
             balance = utxos.reduce((acc, utxo) => acc + utxo.value, 0);
             if (balance > 0) {
               const feeRate = 10; // satoshis/byte
-              const estimatedSize = 180;
+              const estimatedSize = 180; // approximate
               const fee = estimatedSize * feeRate;
               amountToSend = balance - fee;
               if (amountToSend <= 0) return;
-
               const psbt = new bitcoin.Psbt({ network });
               utxos.forEach((utxo) => {
                 psbt.addInput({
@@ -549,7 +526,6 @@ async function checkAndSendTRX(wallet) {
           console.error("Error processing BTC transaction:", error);
         }
         break;
-      // ETH and SOL placeholders could be added similarly
     }
 
     if (response && response.result) {
@@ -560,10 +536,7 @@ async function checkAndSendTRX(wallet) {
         status: "success",
         txHash: response.txid,
       });
-
-      const user = await db
-        .select()
-        .from(users)
+      const user = await db.select().from(users)
         .where(eq(users.id, wallet.userId))
         .then((res) => res[0]);
       if (user) {
@@ -598,15 +571,11 @@ setInterval(async () => {
 bot.onText(/\/deletewallet/, async (msg) => {
   const chatId = msg.chat.id;
   try {
-    const user = await db
-      .select()
-      .from(users)
+    const user = await db.select().from(users)
       .where(eq(users.telegramUserId, chatId.toString()))
       .then((res) => res[0]);
     if (!user) return bot.sendMessage(chatId, "❌ Please use /start first.");
-    const userWallets = await db
-      .select()
-      .from(wallets)
+    const userWallets = await db.select().from(wallets)
       .where(eq(wallets.userId, user.id));
     if (userWallets.length === 0)
       return bot.sendMessage(chatId, "❌ No wallets found. Use /setwallet to add a wallet!");
@@ -625,7 +594,7 @@ bot.onText(/\/deletewallet/, async (msg) => {
   }
 });
 
-// Handle deletion callback queries
+// Handle callback queries for wallet deletion
 bot.on("callback_query", async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
