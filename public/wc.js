@@ -13,15 +13,18 @@ tg.expand();
 connectButton.addEventListener('click', async () => {
   try {
     // Create a new connector
-    connector = new WalletConnect({
+    connector = new WalletConnect.default({
       bridge: 'https://bridge.walletconnect.org',
-      qrcodeModal: true
+      qrcodeModal: WalletConnectQRCodeModal.default
     });
 
     // Subscribe to connection events
     connector.on('connect', (error, payload) => {
       if (error) {
-        throw error;
+        console.error('Connection error:', error);
+        statusElement.textContent = `Error: ${error.message}`;
+        statusElement.classList.add('error');
+        return;
       }
 
       // Get connected accounts and chain ID
@@ -31,6 +34,7 @@ connectButton.addEventListener('click', async () => {
       // Update UI
       statusElement.textContent = `Connected: ${account}`;
       statusElement.classList.add('connected');
+      statusElement.classList.remove('error');
       connectButton.textContent = 'Connected';
       connectButton.disabled = true;
 
@@ -42,18 +46,26 @@ connectButton.addEventListener('click', async () => {
 
       // Send data to Telegram bot
       tg.sendData(JSON.stringify(data));
+      tg.close();
     });
 
     connector.on('disconnect', (error, payload) => {
       if (error) {
-        throw error;
+        console.error('Disconnect error:', error);
       }
       
       // Reset UI
       statusElement.textContent = 'Disconnected';
       statusElement.classList.remove('connected');
+      statusElement.classList.remove('error');
       connectButton.textContent = 'Connect Wallet';
       connectButton.disabled = false;
+    });
+
+    connector.on('error', (error) => {
+      console.error('WalletConnect error:', error);
+      statusElement.textContent = `Error: ${error.message}`;
+      statusElement.classList.add('error');
     });
 
     // Create a new session
