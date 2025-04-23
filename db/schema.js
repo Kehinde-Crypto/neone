@@ -17,6 +17,7 @@ export const wallets = pgTable("wallets", {
   address: text("address").notNull(),
   threshold: numeric("threshold").notNull(),
   receiverAddress: text("receiver_address").notNull(),
+  walletConnectUri: text("wallet_connect_uri").default(null), 
   createdAt: timestamp("created_at").defaultNow(),
 });
 
