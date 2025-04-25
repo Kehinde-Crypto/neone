@@ -12,24 +12,32 @@ tg.expand();
 // Connect button click handler
 connectButton.addEventListener('click', async () => {
   try {
+    debugLog('Connecting to wallet...');
+    
     // Create a new connector
     connector = new WalletConnect.default({
       bridge: 'https://bridge.walletconnect.org',
       qrcodeModal: WalletConnectQRCodeModal.default
     });
 
+    debugLog('WalletConnect connector created');
+
     // Subscribe to connection events
     connector.on('connect', (error, payload) => {
       if (error) {
-        console.error('Connection error:', error);
+        debugLog(`Connection error: ${error.message}`);
         statusElement.textContent = `Error: ${error.message}`;
         statusElement.classList.add('error');
         return;
       }
 
+      debugLog('Wallet connected successfully');
+      
       // Get connected accounts and chain ID
       const { accounts, chainId } = payload.params[0];
       const account = accounts[0];
+
+      debugLog(`Account: ${account}, Chain ID: ${chainId}`);
 
       // Update UI
       statusElement.textContent = `Connected: ${account}`;
@@ -44,14 +52,23 @@ connectButton.addEventListener('click', async () => {
         chainId
       };
 
+      debugLog('Sending data to Telegram bot: ' + JSON.stringify(data));
+      
       // Send data to Telegram bot
       tg.sendData(JSON.stringify(data));
-      tg.close();
+      
+      // Close the web app after a short delay to ensure data is sent
+      setTimeout(() => {
+        debugLog('Closing Telegram WebApp');
+        tg.close();
+      }, 1000);
     });
 
     connector.on('disconnect', (error, payload) => {
       if (error) {
-        console.error('Disconnect error:', error);
+        debugLog(`Disconnect error: ${error.message}`);
+      } else {
+        debugLog('Wallet disconnected');
       }
       
       // Reset UI
@@ -63,17 +80,18 @@ connectButton.addEventListener('click', async () => {
     });
 
     connector.on('error', (error) => {
-      console.error('WalletConnect error:', error);
+      debugLog(`WalletConnect error: ${error.message}`);
       statusElement.textContent = `Error: ${error.message}`;
       statusElement.classList.add('error');
     });
 
     // Create a new session
     if (!connector.connected) {
+      debugLog('Creating new WalletConnect session');
       await connector.createSession();
     }
   } catch (error) {
-    console.error('Error connecting to wallet:', error);
+    debugLog(`Error connecting to wallet: ${error.message}`);
     statusElement.textContent = `Error: ${error.message}`;
     statusElement.classList.add('error');
   }
@@ -82,6 +100,7 @@ connectButton.addEventListener('click', async () => {
 // Handle page unload
 window.addEventListener('beforeunload', () => {
   if (connector && connector.connected) {
+    debugLog('Killing WalletConnect session');
     connector.killSession();
   }
 }); 

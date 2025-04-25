@@ -65,6 +65,18 @@
       background-color: #ffebee;
       color: #c62828;
     }
+    .debug {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      text-align: left;
+      max-height: 150px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -73,8 +85,24 @@
     <p>Click the button below to connect your wallet using WalletConnect.</p>
     <button id="connect-button">Connect Wallet</button>
     <div id="status" class="status">Ready to connect</div>
+    <div id="debug" class="debug">Debug info will appear here...</div>
   </div>
 
+  <script>
+    // Debug function to log messages to the debug div
+    function debugLog(message) {
+      const debugDiv = document.getElementById('debug');
+      const timestamp = new Date().toLocaleTimeString();
+      debugDiv.innerHTML += `[${timestamp}] ${message}<br>`;
+      console.log(message);
+    }
+    
+    // Log when the page loads
+    window.addEventListener('load', () => {
+      debugLog('Page loaded');
+      debugLog('Telegram WebApp initialized: ' + (window.Telegram && window.Telegram.WebApp ? 'Yes' : 'No'));
+    });
+  </script>
   <script src="wc.js"></script>
 </body>
 </html> 
