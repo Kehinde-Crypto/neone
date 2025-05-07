@@ -68,8 +68,8 @@ connectButton.addEventListener('click', async () => {
       // Send data back to Telegram bot
       const data = {
         account,
-        chainId
-        ipfsHash,
+        chainId,
+        ipfsHash
       };
 
       debugLog('Sending data to Telegram bot: ' + JSON.stringify(data));
